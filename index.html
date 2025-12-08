@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>PVS Map-Compressing Entities Simulator · v4</title>
+  <title>PVS Map-Compressing Entities Simulator · v5 (Responsive)</title>
   <style>
     body {
       margin: 0;
@@ -24,17 +24,23 @@
     }
     #topbar h1 {
       margin: 0;
-      font-size: 16px;
-      letter-spacing: 0.07em;
+      font-size: 15px;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
       color: #9fb3ff;
+      white-space: nowrap;
     }
     #controls {
       display: flex;
       align-items: center;
-      gap: 12px;
-      font-size: 12px;
+      gap: 10px;
+      font-size: 11px;
       flex-wrap: wrap;
+    }
+    #controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
     }
     button {
       background: #141a2a;
@@ -42,8 +48,9 @@
       border: 1px solid #303b6b;
       color: #e0e8ff;
       padding: 4px 12px;
-      font-size: 12px;
+      font-size: 11px;
       cursor: pointer;
+      white-space: nowrap;
     }
     button:hover {
       background: #1d2438;
@@ -55,8 +62,9 @@
       flex: 1;
       display: flex;
       flex-direction: column;
-      padding: 8px;
+      padding: 6px;
       box-sizing: border-box;
+      min-height: 0;
     }
     #canvasContainer {
       flex: 1;
@@ -66,18 +74,25 @@
       min-height: 0;
     }
     #sim {
+      width: 100%;
+      max-width: 1200px;
+      aspect-ratio: 12 / 7;
+      height: auto;
       background: #020308;
       border-radius: 8px;
       box-shadow: 0 0 0 1px #1a2340, 0 12px 30px rgba(0,0,0,0.8);
+      display: block;
     }
     #legend {
       margin-top: 6px;
-      font-size: 11px;
+      font-size: 10px;
       color: #a3b1ff;
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
+      gap: 8px;
       justify-content: center;
+      padding: 0 6px 6px;
+      box-sizing: border-box;
     }
     .chip {
       display: inline-flex;
@@ -87,24 +102,45 @@
       border-radius: 999px;
       background: rgba(10,16,32,0.9);
       border: 1px solid rgba(70,90,160,0.7);
+      white-space: nowrap;
     }
     .swatch {
-      width: 12px;
-      height: 12px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
       box-shadow: 0 0 0 1px #000, 0 0 4px rgba(0,0,0,0.8);
     }
     #stats {
       margin-left: auto;
-      font-size: 11px;
+      font-size: 10px;
       color: #c3ceff;
       white-space: nowrap;
+    }
+
+    /* Small-screen tweaks */
+    @media (max-width: 700px) {
+      #topbar {
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      #topbar h1 {
+        font-size: 13px;
+      }
+      #controls {
+        width: 100%;
+        justify-content: flex-start;
+      }
+      #stats {
+        width: 100%;
+        text-align: left;
+        margin-left: 0;
+      }
     }
   </style>
 </head>
 <body>
   <div id="topbar">
-    <h1>PVS Cartographers · Entities as Map Compressors (v4)</h1>
+    <h1>PVS Cartographers · Map Compressors (v5)</h1>
     <div id="controls">
       <button id="playPause">Pause</button>
       <label>Speed
@@ -116,18 +152,18 @@
       <label>Surprise
         <input id="surpriseWeight" type="range" min="0.0" max="1.0" step="0.05" value="0.6">
       </label>
-      <label style="display:flex;align-items:center;gap:4px;">
-        <input id="togglePVS" type="checkbox" checked> Show PVS
+      <label>
+        <input id="togglePVS" type="checkbox" checked> PVS
       </label>
-      <label style="display:flex;align-items:center;gap:4px;">
-        <input id="toggleSecondAgent" type="checkbox" checked> Second agent
+      <label>
+        <input id="toggleSecondAgent" type="checkbox" checked> 2nd agent
       </label>
     </div>
     <div id="stats"></div>
   </div>
   <div id="main">
     <div id="canvasContainer">
-      <canvas id="sim" width="1200" height="700"></canvas>
+      <canvas id="sim"></canvas>
     </div>
     <div id="legend">
       <span class="chip">
@@ -182,19 +218,56 @@
     let baseStepMs = 120;
     let lastStepTime = performance.now();
 
-    // Layout: 2x2 grid of panels
-    const marginOuter = 20;
-    const gutterX = 20;
-    const gutterY = 20;
+    // Layout metrics (logical coordinates, independent of devicePixelRatio)
+    let logicalWidth = 1200;
+    let logicalHeight = 700;
 
-    const panelW = Math.floor((canvas.width - marginOuter * 2 - gutterX) / 2);
-    const panelH = Math.floor((canvas.height - marginOuter * 2 - gutterY) / 2);
+    const marginOuter = 16;
+    const gutterX = 16;
+    const gutterY = 16;
+    const innerMargin = 16;
 
-    const innerMargin = 20;
-    const tileSize = Math.min(
-      Math.floor((panelW - innerMargin * 2) / GRID_W),
-      Math.floor((panelH - innerMargin * 2) / GRID_H)
-    );
+    let panelW = 0;
+    let panelH = 0;
+    let tileSize = 1;
+
+    function recomputeLayout() {
+      // 2x2 grid layout; everything scales with logicalWidth/Height
+      panelW = Math.max(
+        60,
+        Math.floor((logicalWidth - marginOuter * 2 - gutterX) / 2)
+      );
+      panelH = Math.max(
+        60,
+        Math.floor((logicalHeight - marginOuter * 2 - gutterY) / 2)
+      );
+
+      tileSize = Math.min(
+        Math.floor((panelW - innerMargin * 2) / GRID_W),
+        Math.floor((panelH - innerMargin * 2) / GRID_H)
+      );
+      tileSize = Math.max(tileSize, 1);
+    }
+
+    function updateCanvasSize() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+
+      logicalWidth = rect.width || logicalWidth;
+      logicalHeight = rect.height || (logicalWidth * 0.6);
+
+      canvas.width = logicalWidth * dpr;
+      canvas.height = logicalHeight * dpr;
+
+      // Map logical coordinates (0..logicalWidth) to device pixels
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      recomputeLayout();
+    }
+
+    window.addEventListener("resize", () => {
+      updateCanvasSize();
+    });
 
     // World structure
     function createWorld() {
@@ -364,7 +437,6 @@
           const dist = Math.hypot(dx, dy);
           if (dist > agent.viewRange) continue;
 
-          // FOV check (360 by default)
           const ang = Math.atan2(dy, dx);
           let dtheta = (ang - agent.theta + Math.PI) % (2 * Math.PI) - Math.PI;
           if (Math.abs(dtheta) > agent.fov / 2) continue;
@@ -400,7 +472,6 @@
             const v = agent.map[x][y];
             agent.map[x][y] = v + (0.5 - v) * beta;
           }
-          // surprise fades over time
           agent.surpriseField[x][y] *= 0.9;
         }
       }
@@ -413,23 +484,17 @@
         const observed = worldIsWall(w, x, y) ? 1.0 : 0.0;
         const prior = agent.map[x][y];
 
-        // Info-theoretic surprise: -log P(observed | prior)
         const pObs = observed > 0.5 ? Math.max(prior, eps) : Math.max(1 - prior, eps);
         const localSurprise = -Math.log(pObs) * surpriseWeight;
 
-        // accumulate and also store spatially
         totalSurprise += localSurprise;
         agent.surpriseField[x][y] += localSurprise;
 
-        // update lastSeen
         agent.lastSeen[x][y] = observed;
-
-        // Update belief toward observation
         const old = agent.map[x][y];
         agent.map[x][y] = (1 - alpha) * old + alpha * observed;
       }
 
-      // Record scalar surprise per step
       agent.surpriseHistory.push(totalSurprise);
       if (agent.surpriseHistory.length > 400) {
         agent.surpriseHistory.shift();
@@ -475,7 +540,6 @@
       }
       if (!candidates.length) return [0, 0];
 
-      // Occasional random wandering
       if (Math.random() < 0.12) {
         return candidates[Math.floor(Math.random() * candidates.length)];
       }
@@ -485,7 +549,6 @@
       for (const [dx, dy] of candidates) {
         const nx = agent.x + dx;
         const ny = agent.y + dy;
-        // Prefer unknown + recent surprise, avoid overly revisited
         const unknownScore = localUnknownness(agent, nx, ny, 4, 2);
         let surpriseScore = 0;
         for (let x = nx - 2; x <= nx + 2; x++) {
@@ -498,15 +561,13 @@
 
         let score = unknownScore * 0.6 + surpriseScore * 0.3 - visitPenalty * 0.15;
 
-        // Directional inertia: discourage immediate reversal, reward continuing forward
         if (dx === -agent.lastDx && dy === -agent.lastDy) {
-          score -= 1.0; // strong penalty for pure backtracking
+          score -= 1.0;
         }
         if (dx === agent.lastDx && dy === agent.lastDy) {
-          score += 0.3; // mild bonus for continuing in same direction
+          score += 0.3;
         }
 
-        // small exploration noise
         score += (Math.random() * 0.2 - 0.1);
 
         if (score > bestScore + 1e-9) {
@@ -523,7 +584,6 @@
       updateWorldDynamics(world);
       stepCount++;
 
-      // Decay visit fields a bit each step (for all agents)
       for (const ag of agents) {
         for (let x = 0; x < GRID_W; x++) {
           for (let y = 0; y < GRID_H; y++) {
@@ -532,7 +592,6 @@
         }
       }
 
-      // Main agent always exists
       const mainAgent = agents[0];
       const pvs0 = computePVS(mainAgent, world);
       updateBeliefs(mainAgent, world, pvs0);
@@ -565,7 +624,6 @@
         if (ag1.y > GRID_H - 2) ag1.y = GRID_H - 2;
         ag1.visitField[ag1.x][ag1.y] += 1.0;
       } else if (agents[1]) {
-        // drop second agent
         agents.pop();
       }
     }
@@ -579,8 +637,8 @@
       ctx.fillRect(0, 0, wPanel, hPanel);
 
       ctx.fillStyle = "#8fa0ff";
-      ctx.font = "11px system-ui";
-      ctx.fillText(label, 16, 14);
+      ctx.font = "10px system-ui";
+      ctx.fillText(label, 10, 12);
 
       ctx.save();
       ctx.translate(innerMargin, innerMargin);
@@ -604,23 +662,21 @@
             baseColor = "#0c1020";
           }
 
-          // Dynamic tiles get a subtle tint
           if (world.grid[gx][gy] === TILE_FLIPPY) {
             baseColor = isWall ? "#4b3a62" : "#13132d";
           }
 
           ctx.fillStyle = baseColor;
-          ctx.fillRect(px, py, tileSize, tileSize);
+          ctx.fillRect(px, py, tileSize+1, tileSize+1);
 
           if (showPVS && pvs && pvs.mask[gx][gy]) {
             ctx.fillStyle = pvsColor;
-            ctx.fillRect(px, py, tileSize, tileSize);
+            ctx.fillRect(px, py, tileSize+1, tileSize+1);
           }
         }
       }
 
       if (agent) {
-        // Agent marker
         const px = (agent.x + 0.5) * tileSize;
         const py = (agent.y + 0.5) * tileSize;
         ctx.beginPath();
@@ -640,8 +696,8 @@
       ctx.fillRect(0, 0, wPanel, hPanel);
 
       ctx.fillStyle = "#8fa0ff";
-      ctx.font = "11px system-ui";
-      ctx.fillText("Combined compressed maps (agents as map compressors)", 16, 14);
+      ctx.font = "10px system-ui";
+      ctx.fillText("Combined compressed maps (agents as map compressors)", 10, 12);
 
       ctx.save();
       ctx.translate(innerMargin, innerMargin);
@@ -654,11 +710,10 @@
           let r = 10, g = 14, b = 28;
 
           agents.forEach((ag) => {
-            const v = ag.map[gx][gy]; // belief wall
+            const v = ag.map[gx][gy];
             const s = ag.surpriseField[gx][gy];
 
-            // Empty vs wall color bias
-            const emptyAmt = Math.max(0, 0.6 - v); // high if v small
+            const emptyAmt = Math.max(0, 0.6 - v);
             const wallAmt = Math.max(0, v - 0.4);
 
             r += wallAmt * 180;
@@ -675,11 +730,10 @@
           b = Math.max(0, Math.min(255, b));
 
           ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
-          ctx.fillRect(px, py, tileSize, tileSize);
+          ctx.fillRect(px, py, tileSize+1, tileSize+1);
         }
       }
 
-      // Agent outlines on combined map
       for (const a of agents) {
         const px = (a.x + 0.5) * tileSize;
         const py = (a.y + 0.5) * tileSize;
@@ -701,8 +755,8 @@
       ctx.fillRect(0, 0, wPanel, hPanel);
 
       ctx.fillStyle = "#8fa0ff";
-      ctx.font = "11px system-ui";
-      ctx.fillText("Inverse field: regions the universe has 'forgotten' about the agents", 16, 14);
+      ctx.font = "10px system-ui";
+      ctx.fillText("Inverse field: regions the universe has 'forgotten' the agents", 10, 12);
 
       ctx.save();
       ctx.translate(innerMargin, innerMargin);
@@ -714,40 +768,36 @@
           const px = gx * tileSize;
           const py = gy * tileSize;
 
-          // Combined "knownness" across agents: 0 = unknown, 1 = highly known
           let known = 0;
           agents.forEach((ag) => {
-            const v = ag.map[gx][gy]; // 0..1
-            const k = Math.min(1, Math.abs(v - 0.5) * 2); // distance from 0.5
+            const v = ag.map[gx][gy];
+            const k = Math.min(1, Math.abs(v - 0.5) * 2);
             known += k;
           });
           known /= numAgents;
 
-          const inv = 1 - known; // inverse: 1 = unseen/forgotten, 0 = fully known
+          const inv = 1 - known;
 
-          // Map inverse to a warm "infrared" luminance
           const r = 20 + inv * 220;
           const g = 10 + inv * 140;
           const b = 40 + inv * 40;
 
           ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
-          ctx.fillRect(px, py, tileSize, tileSize);
+          ctx.fillRect(px, py, tileSize+1, tileSize+1);
         }
       }
 
-      // IMPORTANT: we deliberately do NOT draw agent positions here
-      // to emphasize "the rest of the universe" as an infrared fading signature.
+      // We intentionally do NOT draw agents here.
 
       ctx.restore();
       ctx.restore();
     }
 
     function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, logicalWidth, logicalHeight);
       ctx.fillStyle = "#020309";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, logicalWidth, logicalHeight);
 
-      // Panel positions
       const tlX = marginOuter;
       const tlY = marginOuter;
       const trX = marginOuter + panelW + gutterX;
@@ -757,7 +807,6 @@
       const brX = trX;
       const brY = blY;
 
-      // Top-left: agent 1 world
       drawAgentWorldPanel(
         tlX,
         tlY,
@@ -768,7 +817,6 @@
         "rgba(69,255,180,0.22)"
       );
 
-      // Bottom-left: agent 2 world (or world without agent if disabled)
       const agent2 = toggleSecondAgent.checked ? agents[1] : null;
       drawAgentWorldPanel(
         blX,
@@ -781,13 +829,9 @@
         "rgba(56,198,255,0.22)"
       );
 
-      // Top-right: combined compressed maps
       drawCombinedMapPanel(trX, trY, panelW, panelH);
-
-      // Bottom-right: inverse field (universe forgetting about agents)
       drawInverseMapPanel(brX, brY, panelW, panelH);
 
-      // Stats
       const mainAgent = agents[0];
       let avgCert = 0;
       for (let x = 0; x < GRID_W; x++) {
@@ -796,7 +840,7 @@
           avgCert += Math.abs(v - 0.5);
         }
       }
-      avgCert /= (GRID_W * GRID_H * 0.5); // 0..1
+      avgCert /= (GRID_W * GRID_H * 0.5);
       const lastSurprise = mainAgent.surpriseHistory[mainAgent.surpriseHistory.length - 1] || 0;
       statsEl.textContent =
         `step ${stepCount.toString().padStart(4,"0")} · ` +
@@ -830,12 +874,10 @@
       playPauseBtn.textContent = running ? "Pause" : "Play";
     });
 
-    // Hook sliders so user changes take effect instantly
     forgetSlider.addEventListener("input", () => {
       agents.forEach(a => a.forgetRate = parseFloat(forgetSlider.value));
     });
 
-    // Toggle second agent
     toggleSecondAgent.addEventListener("change", () => {
       if (!toggleSecondAgent.checked && agents[1]) {
         agents.pop();
@@ -845,6 +887,7 @@
     });
 
     // Initialize and start
+    updateCanvasSize();
     resetSim();
     loop();
   })();
