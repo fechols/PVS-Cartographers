@@ -1,0 +1,853 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PVS Map-Compressing Entities Simulator · v4</title>
+  <style>
+    body {
+      margin: 0;
+      background: #050608;
+      color: #e0e8ff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #topbar {
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: linear-gradient(90deg, #080c18, #050608);
+      box-shadow: 0 2px 4px rgba(0,0,0,0.6);
+      z-index: 2;
+    }
+    #topbar h1 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #9fb3ff;
+    }
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      flex-wrap: wrap;
+    }
+    button {
+      background: #141a2a;
+      border-radius: 999px;
+      border: 1px solid #303b6b;
+      color: #e0e8ff;
+      padding: 4px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #1d2438;
+    }
+    input[type=range] {
+      accent-color: #8aa4ff;
+    }
+    #main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    #canvasContainer {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 0;
+    }
+    #sim {
+      background: #020308;
+      border-radius: 8px;
+      box-shadow: 0 0 0 1px #1a2340, 0 12px 30px rgba(0,0,0,0.8);
+    }
+    #legend {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #a3b1ff;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(10,16,32,0.9);
+      border: 1px solid rgba(70,90,160,0.7);
+    }
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      box-shadow: 0 0 0 1px #000, 0 0 4px rgba(0,0,0,0.8);
+    }
+    #stats {
+      margin-left: auto;
+      font-size: 11px;
+      color: #c3ceff;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <h1>PVS Cartographers · Entities as Map Compressors (v4)</h1>
+    <div id="controls">
+      <button id="playPause">Pause</button>
+      <label>Speed
+        <input id="speed" type="range" min="0.1" max="2.0" step="0.1" value="1.0">
+      </label>
+      <label>Forget
+        <input id="forget" type="range" min="0.0" max="0.05" step="0.005" value="0.01">
+      </label>
+      <label>Surprise
+        <input id="surpriseWeight" type="range" min="0.0" max="1.0" step="0.05" value="0.6">
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;">
+        <input id="togglePVS" type="checkbox" checked> Show PVS
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;">
+        <input id="toggleSecondAgent" type="checkbox" checked> Second agent
+      </label>
+    </div>
+    <div id="stats"></div>
+  </div>
+  <div id="main">
+    <div id="canvasContainer">
+      <canvas id="sim" width="1200" height="700"></canvas>
+    </div>
+    <div id="legend">
+      <span class="chip">
+        <span class="swatch" style="background:#444c70;"></span> World walls
+      </span>
+      <span class="chip">
+        <span class="swatch" style="background:#151b2e;"></span> World empty
+      </span>
+      <span class="chip">
+        <span class="swatch" style="background:#45ffb4;"></span> Agent 1 PVS
+      </span>
+      <span class="chip">
+        <span class="swatch" style="background:#38c6ff;"></span> Agent 2 PVS
+      </span>
+      <span class="chip">
+        <span class="swatch" style="background:#4fa6ff;"></span> Combined compressed map
+      </span>
+      <span class="chip">
+        <span class="swatch" style="background:#ff8f4a;"></span> Inverse (unseen / forgotten)
+      </span>
+      <span class="chip">
+        <span class="swatch" style="background:#ffaa33;"></span> Surprise (prediction error)
+      </span>
+    </div>
+  </div>
+  <script>
+  (() => {
+    // ---- Basic world/model parameters ----
+    const GRID_W = 56;
+    const GRID_H = 28;
+    const TILE_EMPTY = 0;
+    const TILE_WALL = 1;
+    const TILE_FLIPPY = 2; // dynamic wall/empty
+
+    const canvas = document.getElementById("sim");
+    const ctx = canvas.getContext("2d");
+
+    const playPauseBtn = document.getElementById("playPause");
+    const speedSlider = document.getElementById("speed");
+    const forgetSlider = document.getElementById("forget");
+    const surpriseSlider = document.getElementById("surpriseWeight");
+    const togglePVS = document.getElementById("togglePVS");
+    const toggleSecondAgent = document.getElementById("toggleSecondAgent");
+    const statsEl = document.getElementById("stats");
+
+    let running = true;
+    let world = null;
+    let agents = [];
+    let stepCount = 0;
+
+    // Timing
+    let baseStepMs = 120;
+    let lastStepTime = performance.now();
+
+    // Layout: 2x2 grid of panels
+    const marginOuter = 20;
+    const gutterX = 20;
+    const gutterY = 20;
+
+    const panelW = Math.floor((canvas.width - marginOuter * 2 - gutterX) / 2);
+    const panelH = Math.floor((canvas.height - marginOuter * 2 - gutterY) / 2);
+
+    const innerMargin = 20;
+    const tileSize = Math.min(
+      Math.floor((panelW - innerMargin * 2) / GRID_W),
+      Math.floor((panelH - innerMargin * 2) / GRID_H)
+    );
+
+    // World structure
+    function createWorld() {
+      const grid = new Array(GRID_W);
+      const flippy = [];
+      for (let x = 0; x < GRID_W; x++) {
+        grid[x] = new Array(GRID_H);
+        for (let y = 0; y < GRID_H; y++) {
+          grid[x][y] = TILE_EMPTY;
+        }
+      }
+
+      // Perimeter
+      for (let x = 0; x < GRID_W; x++) {
+        grid[x][0] = TILE_WALL;
+        grid[x][GRID_H - 1] = TILE_WALL;
+      }
+      for (let y = 0; y < GRID_H; y++) {
+        grid[0][y] = TILE_WALL;
+        grid[GRID_W - 1][y] = TILE_WALL;
+      }
+
+      // Horizontal bands
+      const bands = [6, 14, 22];
+      for (const y of bands) {
+        for (let x = 2; x < GRID_W - 2; x++) {
+          grid[x][y] = TILE_WALL;
+        }
+      }
+      // Doorways in bands
+      for (const x of [8, 20, 36, 48]) {
+        grid[x][6] = TILE_EMPTY;
+      }
+      for (const x of [12, 30, 44]) {
+        grid[x][14] = TILE_EMPTY;
+      }
+      for (const x of [16, 26, 40, 52]) {
+        grid[x][22] = TILE_EMPTY;
+      }
+
+      // Vertical spines
+      const spines = [14, 28, 42];
+      for (const x of spines) {
+        for (let y = 2; y < GRID_H - 2; y++) {
+          grid[x][y] = TILE_WALL;
+        }
+      }
+      // Doorways in spines
+      for (const y of [4, 10, 18, 24]) {
+        grid[14][y] = TILE_EMPTY;
+      }
+      for (const y of [5, 9, 17, 23]) {
+        grid[28][y] = TILE_EMPTY;
+      }
+      for (const y of [7, 13, 19, 21]) {
+        grid[42][y] = TILE_EMPTY;
+      }
+
+      // Sprinkle random flippy cells (dynamic)
+      for (let i = 0; i < 70; i++) {
+        const x = 2 + Math.floor(Math.random() * (GRID_W - 4));
+        const y = 2 + Math.floor(Math.random() * (GRID_H - 4));
+        if (grid[x][y] === TILE_EMPTY) {
+          grid[x][y] = TILE_FLIPPY;
+          flippy.push({ x, y, wall: Math.random() < 0.5 });
+        }
+      }
+
+      return { grid, flippy };
+    }
+
+    function worldIsWall(w, x, y) {
+      const t = w.grid[x][y];
+      if (t === TILE_WALL) return true;
+      if (t === TILE_EMPTY) return false;
+      // flippy: check its current state
+      for (const f of w.flippy) {
+        if (f.x === x && f.y === y) {
+          return f.wall;
+        }
+      }
+      return false;
+    }
+
+    function updateWorldDynamics(w) {
+      // Flip some dynamic tiles
+      for (const f of w.flippy) {
+        if (Math.random() < 0.02) {
+          f.wall = !f.wall;
+        }
+      }
+    }
+
+    // Agent (entity) structure
+    function createAgent(x, y, colorHue) {
+      const map = [];
+      const lastSeen = [];
+      const surpriseField = [];
+      const visitField = [];
+      for (let i = 0; i < GRID_W; i++) {
+        map[i] = [];
+        lastSeen[i] = [];
+        surpriseField[i] = [];
+        visitField[i] = [];
+        for (let j = 0; j < GRID_H; j++) {
+          map[i][j] = 0.5;          // belief: 0 empty, 1 wall
+          lastSeen[i][j] = 0.5;     // last observed value
+          surpriseField[i][j] = 0;  // running surprise magnitude
+          visitField[i][j] = 0;     // visit intensity
+        }
+      }
+      return {
+        x,
+        y,
+        theta: 0,
+        viewRange: 12,
+        fov: Math.PI * 2,  // full 360
+        alpha: 0.35,
+        forgetRate: parseFloat(forgetSlider.value),
+        map,
+        lastSeen,
+        surpriseField,
+        surpriseHistory: [],
+        visitField,
+        lastDx: 0,
+        lastDy: 0,
+        hue: colorHue
+      };
+    }
+
+    // Raycasting for occlusion
+    function raycast(x0, y0, x1, y1) {
+      let dx = Math.abs(x1 - x0);
+      let dy = Math.abs(y1 - y0);
+      let sx = x0 < x1 ? 1 : -1;
+      let sy = y0 < y1 ? 1 : -1;
+      let err = dx - dy;
+      let x = x0, y = y0;
+      const cells = [[x, y]];
+      while (x !== x1 || y !== y1) {
+        const e2 = 2 * err;
+        if (e2 > -dy) {
+          err -= dy;
+          x += sx;
+        }
+        if (e2 < dx) {
+          err += dx;
+          y += sy;
+        }
+        if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) break;
+        cells.push([x, y]);
+      }
+      return cells;
+    }
+
+    function computePVS(agent, w) {
+      const mask = new Array(GRID_W);
+      const list = [];
+      for (let x = 0; x < GRID_W; x++) {
+        mask[x] = new Array(GRID_H).fill(false);
+      }
+      for (let x = 0; x < GRID_W; x++) {
+        for (let y = 0; y < GRID_H; y++) {
+          if (x === agent.x && y === agent.y) continue;
+          const dx = x - agent.x;
+          const dy = y - agent.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > agent.viewRange) continue;
+
+          // FOV check (360 by default)
+          const ang = Math.atan2(dy, dx);
+          let dtheta = (ang - agent.theta + Math.PI) % (2 * Math.PI) - Math.PI;
+          if (Math.abs(dtheta) > agent.fov / 2) continue;
+
+          const ray = raycast(agent.x, agent.y, x, y);
+          let blocked = false;
+          for (let i = 1; i < ray.length - 1; i++) {
+            const [rx, ry] = ray[i];
+            if (worldIsWall(w, rx, ry)) {
+              blocked = true;
+              break;
+            }
+          }
+          if (!blocked) {
+            mask[x][y] = true;
+            list.push([x, y]);
+          }
+        }
+      }
+      return { mask, list };
+    }
+
+    function updateBeliefs(agent, w, pvs) {
+      agent.forgetRate = parseFloat(forgetSlider.value);
+      const alpha = agent.alpha;
+      const beta = agent.forgetRate;
+      const surpriseWeight = parseFloat(surpriseSlider.value);
+
+      // 1) Forgetting: drift non-PVS cells toward 0.5 + decay surprise
+      for (let x = 0; x < GRID_W; x++) {
+        for (let y = 0; y < GRID_H; y++) {
+          if (!pvs.mask[x][y]) {
+            const v = agent.map[x][y];
+            agent.map[x][y] = v + (0.5 - v) * beta;
+          }
+          // surprise fades over time
+          agent.surpriseField[x][y] *= 0.9;
+        }
+      }
+
+      // 2) Integrate new observations and compute surprise
+      let totalSurprise = 0;
+      const eps = 1e-4;
+      for (const cell of pvs.list) {
+        const x = cell[0], y = cell[1];
+        const observed = worldIsWall(w, x, y) ? 1.0 : 0.0;
+        const prior = agent.map[x][y];
+
+        // Info-theoretic surprise: -log P(observed | prior)
+        const pObs = observed > 0.5 ? Math.max(prior, eps) : Math.max(1 - prior, eps);
+        const localSurprise = -Math.log(pObs) * surpriseWeight;
+
+        // accumulate and also store spatially
+        totalSurprise += localSurprise;
+        agent.surpriseField[x][y] += localSurprise;
+
+        // update lastSeen
+        agent.lastSeen[x][y] = observed;
+
+        // Update belief toward observation
+        const old = agent.map[x][y];
+        agent.map[x][y] = (1 - alpha) * old + alpha * observed;
+      }
+
+      // Record scalar surprise per step
+      agent.surpriseHistory.push(totalSurprise);
+      if (agent.surpriseHistory.length > 400) {
+        agent.surpriseHistory.shift();
+      }
+    }
+
+    function localUnknownness(agent, nx, ny, rx, ry) {
+      let score = 0;
+      for (let x = nx - rx; x <= nx + rx; x++) {
+        for (let y = ny - ry; y <= ny + ry; y++) {
+          if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) continue;
+          const v = agent.map[x][y];
+          const u = 1 - Math.min(1, Math.abs(v - 0.5) * 2); // 1 at 0.5, 0 at 0 or 1
+          score += u;
+        }
+      }
+      return score;
+    }
+
+    function localVisitPenalty(agent, nx, ny, r) {
+      let acc = 0;
+      for (let x = nx - r; x <= nx + r; x++) {
+        for (let y = ny - r; y <= ny + r; y++) {
+          if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) continue;
+          acc += agent.visitField[x][y];
+        }
+      }
+      return acc;
+    }
+
+    function chooseMove(agent) {
+      const dirs = [
+        [1, 0], [-1, 0], [0, 1], [0, -1],
+        [1, 1], [1, -1], [-1, 1], [-1, -1]
+      ];
+      const candidates = [];
+      for (const [dx, dy] of dirs) {
+        const nx = agent.x + dx;
+        const ny = agent.y + dy;
+        if (nx < 1 || nx >= GRID_W - 1 || ny < 1 || ny >= GRID_H - 1) continue;
+        if (worldIsWall(world, nx, ny)) continue;
+        candidates.push([dx, dy]);
+      }
+      if (!candidates.length) return [0, 0];
+
+      // Occasional random wandering
+      if (Math.random() < 0.12) {
+        return candidates[Math.floor(Math.random() * candidates.length)];
+      }
+
+      let bestScore = -Infinity;
+      let best = [];
+      for (const [dx, dy] of candidates) {
+        const nx = agent.x + dx;
+        const ny = agent.y + dy;
+        // Prefer unknown + recent surprise, avoid overly revisited
+        const unknownScore = localUnknownness(agent, nx, ny, 4, 2);
+        let surpriseScore = 0;
+        for (let x = nx - 2; x <= nx + 2; x++) {
+          for (let y = ny - 2; y <= ny + 2; y++) {
+            if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) continue;
+            surpriseScore += agent.surpriseField[x][y];
+          }
+        }
+        const visitPenalty = localVisitPenalty(agent, nx, ny, 1);
+
+        let score = unknownScore * 0.6 + surpriseScore * 0.3 - visitPenalty * 0.15;
+
+        // Directional inertia: discourage immediate reversal, reward continuing forward
+        if (dx === -agent.lastDx && dy === -agent.lastDy) {
+          score -= 1.0; // strong penalty for pure backtracking
+        }
+        if (dx === agent.lastDx && dy === agent.lastDy) {
+          score += 0.3; // mild bonus for continuing in same direction
+        }
+
+        // small exploration noise
+        score += (Math.random() * 0.2 - 0.1);
+
+        if (score > bestScore + 1e-9) {
+          bestScore = score;
+          best = [[dx, dy]];
+        } else if (Math.abs(score - bestScore) <= 1e-9) {
+          best.push([dx, dy]);
+        }
+      }
+      return best.length ? best[Math.floor(Math.random() * best.length)] : [0, 0];
+    }
+
+    function stepSimulation() {
+      updateWorldDynamics(world);
+      stepCount++;
+
+      // Decay visit fields a bit each step (for all agents)
+      for (const ag of agents) {
+        for (let x = 0; x < GRID_W; x++) {
+          for (let y = 0; y < GRID_H; y++) {
+            ag.visitField[x][y] *= 0.995;
+          }
+        }
+      }
+
+      // Main agent always exists
+      const mainAgent = agents[0];
+      const pvs0 = computePVS(mainAgent, world);
+      updateBeliefs(mainAgent, world, pvs0);
+      const move0 = chooseMove(mainAgent);
+      mainAgent.x += move0[0];
+      mainAgent.y += move0[1];
+      mainAgent.lastDx = move0[0];
+      mainAgent.lastDy = move0[1];
+      if (mainAgent.x < 1) mainAgent.x = 1;
+      if (mainAgent.x > GRID_W - 2) mainAgent.x = GRID_W - 2;
+      if (mainAgent.y < 1) mainAgent.y = 1;
+      if (mainAgent.y > GRID_H - 2) mainAgent.y = GRID_H - 2;
+      mainAgent.visitField[mainAgent.x][mainAgent.y] += 1.0;
+
+      if (toggleSecondAgent.checked) {
+        if (!agents[1]) {
+          agents[1] = createAgent(GRID_W - 4, GRID_H - 4, 210);
+        }
+        const ag1 = agents[1];
+        const pvs1 = computePVS(ag1, world);
+        updateBeliefs(ag1, world, pvs1);
+        const move1 = chooseMove(ag1);
+        ag1.x += move1[0];
+        ag1.y += move1[1];
+        ag1.lastDx = move1[0];
+        ag1.lastDy = move1[1];
+        if (ag1.x < 1) ag1.x = 1;
+        if (ag1.x > GRID_W - 2) ag1.x = GRID_W - 2;
+        if (ag1.y < 1) ag1.y = 1;
+        if (ag1.y > GRID_H - 2) ag1.y = GRID_H - 2;
+        ag1.visitField[ag1.x][ag1.y] += 1.0;
+      } else if (agents[1]) {
+        // drop second agent
+        agents.pop();
+      }
+    }
+
+    // ---- Drawing helpers ----
+
+    function drawAgentWorldPanel(x0, y0, wPanel, hPanel, agent, label, pvsColor) {
+      ctx.save();
+      ctx.translate(x0, y0);
+      ctx.fillStyle = "#050611";
+      ctx.fillRect(0, 0, wPanel, hPanel);
+
+      ctx.fillStyle = "#8fa0ff";
+      ctx.font = "11px system-ui";
+      ctx.fillText(label, 16, 14);
+
+      ctx.save();
+      ctx.translate(innerMargin, innerMargin);
+
+      const showPVS = togglePVS.checked && agent;
+      let pvs = null;
+      if (showPVS) {
+        pvs = computePVS(agent, world);
+      }
+
+      for (let gx = 0; gx < GRID_W; gx++) {
+        for (let gy = 0; gy < GRID_H; gy++) {
+          const px = gx * tileSize;
+          const py = gy * tileSize;
+          const isWall = worldIsWall(world, gx, gy);
+
+          let baseColor;
+          if (isWall) {
+            baseColor = "#343a57";
+          } else {
+            baseColor = "#0c1020";
+          }
+
+          // Dynamic tiles get a subtle tint
+          if (world.grid[gx][gy] === TILE_FLIPPY) {
+            baseColor = isWall ? "#4b3a62" : "#13132d";
+          }
+
+          ctx.fillStyle = baseColor;
+          ctx.fillRect(px, py, tileSize, tileSize);
+
+          if (showPVS && pvs && pvs.mask[gx][gy]) {
+            ctx.fillStyle = pvsColor;
+            ctx.fillRect(px, py, tileSize, tileSize);
+          }
+        }
+      }
+
+      if (agent) {
+        // Agent marker
+        const px = (agent.x + 0.5) * tileSize;
+        const py = (agent.y + 0.5) * tileSize;
+        ctx.beginPath();
+        ctx.fillStyle = `hsl(${agent.hue},80%,65%)`;
+        ctx.arc(px, py, tileSize * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+      ctx.restore();
+    }
+
+    function drawCombinedMapPanel(x0, y0, wPanel, hPanel) {
+      ctx.save();
+      ctx.translate(x0, y0);
+      ctx.fillStyle = "#050611";
+      ctx.fillRect(0, 0, wPanel, hPanel);
+
+      ctx.fillStyle = "#8fa0ff";
+      ctx.font = "11px system-ui";
+      ctx.fillText("Combined compressed maps (agents as map compressors)", 16, 14);
+
+      ctx.save();
+      ctx.translate(innerMargin, innerMargin);
+
+      for (let gx = 0; gx < GRID_W; gx++) {
+        for (let gy = 0; gy < GRID_H; gy++) {
+          const px = gx * tileSize;
+          const py = gy * tileSize;
+
+          let r = 10, g = 14, b = 28;
+
+          agents.forEach((ag) => {
+            const v = ag.map[gx][gy]; // belief wall
+            const s = ag.surpriseField[gx][gy];
+
+            // Empty vs wall color bias
+            const emptyAmt = Math.max(0, 0.6 - v); // high if v small
+            const wallAmt = Math.max(0, v - 0.4);
+
+            r += wallAmt * 180;
+            g += emptyAmt * 80;
+            b += emptyAmt * 150;
+
+            const shock = Math.min(1, s * 0.4);
+            r += shock * 180;
+            g += shock * 100;
+          });
+
+          r = Math.max(0, Math.min(255, r));
+          g = Math.max(0, Math.min(255, g));
+          b = Math.max(0, Math.min(255, b));
+
+          ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+          ctx.fillRect(px, py, tileSize, tileSize);
+        }
+      }
+
+      // Agent outlines on combined map
+      for (const a of agents) {
+        const px = (a.x + 0.5) * tileSize;
+        const py = (a.y + 0.5) * tileSize;
+        ctx.beginPath();
+        ctx.strokeStyle = `hsl(${a.hue},90%,80%)`;
+        ctx.lineWidth = 1;
+        ctx.arc(px, py, tileSize * 0.45, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+      ctx.restore();
+    }
+
+    function drawInverseMapPanel(x0, y0, wPanel, hPanel) {
+      ctx.save();
+      ctx.translate(x0, y0);
+      ctx.fillStyle = "#050611";
+      ctx.fillRect(0, 0, wPanel, hPanel);
+
+      ctx.fillStyle = "#8fa0ff";
+      ctx.font = "11px system-ui";
+      ctx.fillText("Inverse field: regions the universe has 'forgotten' about the agents", 16, 14);
+
+      ctx.save();
+      ctx.translate(innerMargin, innerMargin);
+
+      const numAgents = agents.length || 1;
+
+      for (let gx = 0; gx < GRID_W; gx++) {
+        for (let gy = 0; gy < GRID_H; gy++) {
+          const px = gx * tileSize;
+          const py = gy * tileSize;
+
+          // Combined "knownness" across agents: 0 = unknown, 1 = highly known
+          let known = 0;
+          agents.forEach((ag) => {
+            const v = ag.map[gx][gy]; // 0..1
+            const k = Math.min(1, Math.abs(v - 0.5) * 2); // distance from 0.5
+            known += k;
+          });
+          known /= numAgents;
+
+          const inv = 1 - known; // inverse: 1 = unseen/forgotten, 0 = fully known
+
+          // Map inverse to a warm "infrared" luminance
+          const r = 20 + inv * 220;
+          const g = 10 + inv * 140;
+          const b = 40 + inv * 40;
+
+          ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+          ctx.fillRect(px, py, tileSize, tileSize);
+        }
+      }
+
+      // IMPORTANT: we deliberately do NOT draw agent positions here
+      // to emphasize "the rest of the universe" as an infrared fading signature.
+
+      ctx.restore();
+      ctx.restore();
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#020309";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Panel positions
+      const tlX = marginOuter;
+      const tlY = marginOuter;
+      const trX = marginOuter + panelW + gutterX;
+      const trY = marginOuter;
+      const blX = marginOuter;
+      const blY = marginOuter + panelH + gutterY;
+      const brX = trX;
+      const brY = blY;
+
+      // Top-left: agent 1 world
+      drawAgentWorldPanel(
+        tlX,
+        tlY,
+        panelW,
+        panelH,
+        agents[0],
+        "Agent 1 · ground truth universe + PVS",
+        "rgba(69,255,180,0.22)"
+      );
+
+      // Bottom-left: agent 2 world (or world without agent if disabled)
+      const agent2 = toggleSecondAgent.checked ? agents[1] : null;
+      drawAgentWorldPanel(
+        blX,
+        blY,
+        panelW,
+        panelH,
+        agent2,
+        agent2 ? "Agent 2 · ground truth universe + PVS"
+               : "Universe (second agent disabled)",
+        "rgba(56,198,255,0.22)"
+      );
+
+      // Top-right: combined compressed maps
+      drawCombinedMapPanel(trX, trY, panelW, panelH);
+
+      // Bottom-right: inverse field (universe forgetting about agents)
+      drawInverseMapPanel(brX, brY, panelW, panelH);
+
+      // Stats
+      const mainAgent = agents[0];
+      let avgCert = 0;
+      for (let x = 0; x < GRID_W; x++) {
+        for (let y = 0; y < GRID_H; y++) {
+          const v = mainAgent.map[x][y];
+          avgCert += Math.abs(v - 0.5);
+        }
+      }
+      avgCert /= (GRID_W * GRID_H * 0.5); // 0..1
+      const lastSurprise = mainAgent.surpriseHistory[mainAgent.surpriseHistory.length - 1] || 0;
+      statsEl.textContent =
+        `step ${stepCount.toString().padStart(4,"0")} · ` +
+        `avg certainty ${(avgCert*100).toFixed(1)}% · ` +
+        `last surprise ${lastSurprise.toFixed(3)}`;
+    }
+
+    function loop() {
+      requestAnimationFrame(loop);
+      const now = performance.now();
+      const speedFactor = parseFloat(speedSlider.value);
+      const stepMs = baseStepMs / speedFactor;
+      if (running && now - lastStepTime >= stepMs) {
+        lastStepTime = now;
+        stepSimulation();
+      }
+      draw();
+    }
+
+    function resetSim() {
+      world = createWorld();
+      agents = [
+        createAgent(3, 3, 140),
+        createAgent(GRID_W - 4, GRID_H - 4, 210)
+      ];
+      stepCount = 0;
+    }
+
+    playPauseBtn.addEventListener("click", () => {
+      running = !running;
+      playPauseBtn.textContent = running ? "Pause" : "Play";
+    });
+
+    // Hook sliders so user changes take effect instantly
+    forgetSlider.addEventListener("input", () => {
+      agents.forEach(a => a.forgetRate = parseFloat(forgetSlider.value));
+    });
+
+    // Toggle second agent
+    toggleSecondAgent.addEventListener("change", () => {
+      if (!toggleSecondAgent.checked && agents[1]) {
+        agents.pop();
+      } else if (toggleSecondAgent.checked && !agents[1]) {
+        agents[1] = createAgent(GRID_W - 4, GRID_H - 4, 210);
+      }
+    });
+
+    // Initialize and start
+    resetSim();
+    loop();
+  })();
+  </script>
+</body>
+</html>
