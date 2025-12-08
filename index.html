@@ -228,6 +228,7 @@
     let panelW = 0;
     let panelH = 0;
     let tileSize = 1;
+    let lastWidth = 0;  // Track last width to detect real resizes vs scroll-triggered
 
     function recomputeLayout() {
       // 2x2 grid layout; everything scales with logicalWidth/Height
@@ -250,9 +251,20 @@
     function updateCanvasSize() {
       const dpr = window.devicePixelRatio || 1;
 
-      // Get available space
+      // Use window.innerWidth which is stable (doesn't change with scroll)
       const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
+
+      // Only recalculate if width changed (actual resize/rotation)
+      // This prevents scroll-triggered recalculations on mobile
+      if (lastWidth > 0 && Math.abs(viewportWidth - lastWidth) < 10) {
+        return; // Skip - this is likely a scroll-triggered false resize
+      }
+      lastWidth = viewportWidth;
+
+      // For height, use screen.availHeight which is stable on mobile
+      // (doesn't change as browser chrome hides/shows during scroll)
+      const stableHeight = Math.min(window.innerHeight, screen.availHeight);
+
       const topbarEl = document.getElementById('topbar');
       const legendEl = document.getElementById('legend');
       const topbarHeight = topbarEl ? topbarEl.offsetHeight : 50;
@@ -260,23 +272,24 @@
       const mainPadding = 12; // 6px top + 6px bottom
 
       const availableWidth = viewportWidth - mainPadding;
-      const availableHeight = viewportHeight - topbarHeight - legendHeight - mainPadding;
+      const availableHeight = stableHeight - topbarHeight - legendHeight - mainPadding;
 
-      // Check for extreme landscape: height < width/2
-      const isExtremeLandscape = availableHeight < availableWidth / 2;
+      // Check for extreme landscape: height < width/3 (e.g., phone in landscape)
+      // Using /3 instead of /2 so normal 16:9 displays don't trigger scrolling mode
+      const isExtremeLandscape = availableHeight < availableWidth / 3;
 
       if (isExtremeLandscape) {
         // Each row should fill the viewport height
         // Canvas height = 2 rows worth (scroll to see second row)
         const rowHeight = availableHeight;
         logicalHeight = rowHeight * 2;
-        // Width based on content aspect ratio (12:7 means width = height * 12/7)
-        logicalWidth = Math.min(availableWidth, logicalHeight * (12 / 7));
+        // Width based on content aspect ratio (2:1 for 56x28 grid)
+        logicalWidth = Math.min(availableWidth, logicalHeight * 2);
       } else {
         // Normal mode: fit entire 2x2 grid on screen
-        // Use the more constrained dimension
-        const widthBasedHeight = availableWidth * (7 / 12);
-        const heightBasedWidth = availableHeight * (12 / 7);
+        // Use the more constrained dimension (2:1 aspect ratio for 56x28 grid)
+        const widthBasedHeight = availableWidth / 2;
+        const heightBasedWidth = availableHeight * 2;
 
         if (widthBasedHeight <= availableHeight) {
           // Width is the constraint
