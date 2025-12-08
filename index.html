@@ -11,7 +11,8 @@
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       display: flex;
       flex-direction: column;
-      height: 100vh;
+      min-height: 100vh;
+      overflow-y: auto;
     }
     #topbar {
       padding: 8px 12px;
@@ -67,18 +68,14 @@
       min-height: 0;
     }
     #canvasContainer {
-      flex: 1;
+      flex: 0 0 auto;
       display: flex;
       justify-content: center;
       align-items: flex-start;
       min-height: 0;
     }
     #sim {
-      width: 100%;
       max-width: 1200px;
-      aspect-ratio: 12 / 7;
-      height: auto;
-      max-height: calc(100vh - 110px);
       background: #020308;
       border-radius: 8px;
       box-shadow: 0 0 0 1px #1a2340, 0 12px 30px rgba(0,0,0,0.8);
@@ -251,18 +248,54 @@
     }
 
     function updateCanvasSize() {
-      const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
 
-      logicalWidth = rect.width || logicalWidth;
-      logicalHeight = rect.height || (logicalWidth * 0.6);
+      // Get available space
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const topbarEl = document.getElementById('topbar');
+      const legendEl = document.getElementById('legend');
+      const topbarHeight = topbarEl ? topbarEl.offsetHeight : 50;
+      const legendHeight = legendEl ? legendEl.offsetHeight : 40;
+      const mainPadding = 12; // 6px top + 6px bottom
 
+      const availableWidth = viewportWidth - mainPadding;
+      const availableHeight = viewportHeight - topbarHeight - legendHeight - mainPadding;
+
+      // Check for extreme landscape: height < width/2
+      const isExtremeLandscape = availableHeight < availableWidth / 2;
+
+      if (isExtremeLandscape) {
+        // Each row should fill the viewport height
+        // Canvas height = 2 rows worth (scroll to see second row)
+        const rowHeight = availableHeight;
+        logicalHeight = rowHeight * 2;
+        // Width based on content aspect ratio (12:7 means width = height * 12/7)
+        logicalWidth = Math.min(availableWidth, logicalHeight * (12 / 7));
+      } else {
+        // Normal mode: fit entire 2x2 grid on screen
+        // Use the more constrained dimension
+        const widthBasedHeight = availableWidth * (7 / 12);
+        const heightBasedWidth = availableHeight * (12 / 7);
+
+        if (widthBasedHeight <= availableHeight) {
+          // Width is the constraint
+          logicalWidth = availableWidth;
+          logicalHeight = widthBasedHeight;
+        } else {
+          // Height is the constraint
+          logicalHeight = availableHeight;
+          logicalWidth = heightBasedWidth;
+        }
+      }
+
+      // Apply to canvas
+      canvas.style.width = logicalWidth + 'px';
+      canvas.style.height = logicalHeight + 'px';
       canvas.width = logicalWidth * dpr;
       canvas.height = logicalHeight * dpr;
 
-      // Map logical coordinates (0..logicalWidth) to device pixels
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
       recomputeLayout();
     }
 
