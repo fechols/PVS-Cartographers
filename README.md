@@ -5,3 +5,7 @@ See it live:
 Read the paper:
 
 [Shadow Principle](Shadow_Principle.pdf)
+
+Companion paper proving that it is impossible for embedded observers to perfectly predict the future:
+
+[Predicting the Future in Systems with Embedded Observers](On_Predicting_the_Future_in_Systems_with_Embedded_Observers.pdf)
